@@ -1,0 +1,41 @@
+# Dados de jogo (não versionar — licenciados pela id Software/ZeniMax,
+# separados do código GPL do engine). Baixe o doom1.wad shareware à parte
+# e coloque em linuxdoom-1.10/ para rodar localmente.
+*.wad
+*.WAD
+
+# Artefatos de build (C)
+*.o
+*.obj
+*.a
+*.out
+*.exe
+*.dSYM/
+linuxdoom-1.10/linux/
+sndserv/linux/
+core
+# Configuração local do Claude Code — específica de máquina/usuário,
+# pode conter permissões e caminhos locais.
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editores/IDEs
+.vscode/
+.claude/
+.agents/
+.idea/
+*.swp
+*.swo
+*~
+
+# Arquivos sensíveis genéricos (chaves, env, credenciais)
+.env
+.env.*
+*.pem
+*.key
+*credentials*
+*secret*
