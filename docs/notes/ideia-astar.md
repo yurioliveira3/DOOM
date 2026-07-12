@@ -83,4 +83,4 @@ function A_STAR(start, goal):
 Nenhum definido ainda — este documento é só o registro da ideia e do
 levantamento inicial feito em conversa. Quando decidirmos avançar,
 abrir uma branch própria (não misturar com `port/macos-build`) e um
-novo documento `02-plano-astar.md` com plano concreto.
+novo documento numerado com plano concreto.

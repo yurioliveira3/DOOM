@@ -80,5 +80,10 @@ Testado compilando arquivo a arquivo com clang direto no macOS. Resumo:
   editores (`.vscode/`, `.idea/`, `*.swp`) e padrões genéricos de
   segredo (`.env`, `*.pem`, `*.key`, `*credentials*`, `*secret*`).
 - 2026-07-12: assunto A*/Dijkstra segregado deste plano — passou a
-  viver em `01-ideia-astar.md`, sem relação de dependência com o
+  viver em `ideia-astar.md`, sem relação de dependência com o
   porte para macOS.
+- 2026-07-12: adicionado `melhorias-core.md` (brainstorm de
+  otimizações/melhorias no core, sem plano de execução).
+- 2026-07-12: abandonado o esquema de numeração nos nomes de arquivo
+  (`00-`, `01-`, `02-`) — a ordem/prioridade agora vive só em
+  `INDICE.md`, e os arquivos de plano ficam nomeados só pelo assunto.
