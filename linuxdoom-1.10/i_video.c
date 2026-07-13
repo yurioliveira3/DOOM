@@ -95,6 +95,9 @@ int		doPointerWarp = POINTER_WARP_COUNTDOWN;
 // to use ....
 static int	multiply=1;
 
+static void I_CreateImage(void);
+static void I_DestroyImage(void);
+static void I_ResizeGraphics(int neww, int newh);
 
 //
 //  Translates the key currently in X_event
@@ -170,22 +173,13 @@ int xlatekey(void)
 void I_ShutdownGraphics(void)
 {
   // I_Error() calls this unconditionally, including when I_InitGraphics()
-  // never got far enough to open a display (e.g. no X server running) --
-  // nothing to tear down in that case, and calling into Xlib with a NULL
-  // display crashes.
-  if (!X_display)
+  // never got far enough to open a display or create an image (e.g. no X
+  // server running) -- nothing to tear down in that case, and calling into
+  // Xlib with a NULL display crashes.
+  if (!X_display || !image)
       return;
 
-  // Detach from X server
-  if (!XShmDetach(X_display, &X_shminfo))
-	    I_Error("XShmDetach() failed in I_ShutdownGraphics()");
-
-  // Release shared memory.
-  shmdt(X_shminfo.shmaddr);
-  shmctl(X_shminfo.shmid, IPC_RMID, 0);
-
-  // Paranoia.
-  image->data = NULL;
+  I_DestroyImage();
 }
 
 
@@ -281,9 +275,14 @@ void I_GetEvent(void)
 	break;
 	
       case Expose:
-      case ConfigureNotify:
 	break;
-	
+
+      case ConfigureNotify:
+	// Window was resized (drag, or the native macOS zoom/maximize
+	// button) -- reallocate the image to match.
+	I_ResizeGraphics(X_event.xconfigure.width, X_event.xconfigure.height);
+	break;
+
       default:
 	if (doShm && X_event.type == X_shmeventtype) shmFinished = true;
 	break;
@@ -389,39 +388,48 @@ void I_FinishUpdate (void)
     // scales the screen size before blitting it
     if (trueColor)
     {
-	// Expand palette indices to real RGB pixels (via truecolorLUT) and,
-	// if multiply > 1, upscale with simple nearest-neighbor repetition.
-	// This replaces the PseudoColor-only byte-packing tricks below,
-	// which assumed a pixel format that doesn't apply here.
+	// Expand palette indices to real RGB pixels (via truecolorLUT),
+	// scaling to fit the window's current size -- one nearest-neighbor
+	// source lookup per destination pixel. Handles the initial
+	// multiply-based size and any later live resize with the same
+	// simple loop. This replaces the PseudoColor-only byte-packing
+	// tricks below, which assumed a pixel format that doesn't apply
+	// here.
+	//
+	// The 320x200 aspect ratio is preserved (never stretched out of
+	// shape): scale to fit inside the window and letterbox/pillarbox
+	// the rest in black, centered.
 	byte*		src = screens[0];
-	unsigned int*	dst = (unsigned int*) image->data;
-	int		x, y, mx, my;
-	unsigned int	color;
+	unsigned int*	dst;
+	int		x, y, srcx, srcy;
+	byte*		srcrow;
+	int		destW, destH, offX, offY;
 
-	if (multiply == 1)
+	if (X_width * SCREENHEIGHT > X_height * SCREENWIDTH)
 	{
-	    int n = SCREENWIDTH * SCREENHEIGHT;
-	    while (n--)
-		*dst++ = truecolorLUT[*src++];
+	    destH = X_height;
+	    destW = X_height * SCREENWIDTH / SCREENHEIGHT;
 	}
 	else
 	{
-	    for (y=0 ; y<SCREENHEIGHT ; y++)
+	    destW = X_width;
+	    destH = X_width * SCREENHEIGHT / SCREENWIDTH;
+	}
+	offX = (X_width - destW) / 2;
+	offY = (X_height - destH) / 2;
+
+	if (destW != X_width || destH != X_height)
+	    memset(image->data, 0, (size_t)X_width * X_height * 4);
+
+	for (y=0 ; y<destH ; y++)
+	{
+	    srcy = (y * SCREENHEIGHT) / destH;
+	    srcrow = src + srcy * SCREENWIDTH;
+	    dst = (unsigned int*) image->data + (offY + y) * X_width + offX;
+	    for (x=0 ; x<destW ; x++)
 	    {
-		unsigned int* rowstart = dst;
-
-		for (x=0 ; x<SCREENWIDTH ; x++)
-		{
-		    color = truecolorLUT[*src++];
-		    for (mx=0 ; mx<multiply ; mx++)
-			*dst++ = color;
-		}
-
-		for (my=1 ; my<multiply ; my++)
-		{
-		    memcpy(dst, rowstart, X_width * sizeof(unsigned int));
-		    dst += X_width;
-		}
+		srcx = (x * SCREENWIDTH) / destW;
+		*dst++ = truecolorLUT[srcrow[srcx]];
 	    }
 	}
     }
@@ -700,7 +708,11 @@ void I_SetPalette (byte* palette)
 //  thus there might have been stale
 //  handles accumulating.
 //
-void grabsharedmemory(int size)
+// Returns false (instead of I_Error'ing) if shared memory couldn't be
+// allocated. macOS's default SysV shm limits (kern.sysv.shmall/shmmax)
+// are small enough that this is a routine, expected failure here -- not
+// a fatal one -- so the caller can fall back to plain Xlib image transfer.
+boolean grabsharedmemory(int size)
 {
 
   int			key = ('d'<<24) | ('o'<<16) | ('o'<<8) | 'm';
@@ -710,7 +722,7 @@ void grabsharedmemory(int size)
   int			rc;
   // UNUSED int done=0;
   int			pollution=5;
-  
+
   // try to use what was here before
   do
   {
@@ -718,7 +730,7 @@ void grabsharedmemory(int size)
     if (id != -1)
     {
       rc=shmctl(id, IPC_STAT, &shminfo); // get stats on it
-      if (!rc) 
+      if (!rc)
       {
 	if (shminfo.shm_nattch)
 	{
@@ -735,16 +747,22 @@ void grabsharedmemory(int size)
 	      fprintf(stderr,
 		      "Was able to kill my old shared memory\n");
 	    else
-	      I_Error("Was NOT able to kill my old shared memory");
-	    
+	    {
+	      fprintf(stderr, "Was NOT able to kill my old shared memory\n");
+	      return false;
+	    }
+
 	    id = shmget((key_t)key, size, IPC_CREAT|0777);
 	    if (id==-1)
-	      I_Error("Could not get shared memory");
-	    
+	    {
+	      fprintf(stderr, "Could not get shared memory\n");
+	      return false;
+	    }
+
 	    rc=shmctl(id, IPC_STAT, &shminfo);
-	    
+
 	    break;
-	    
+
 	  }
 	  if (size >= shminfo.shm_segsz)
 	  {
@@ -766,7 +784,8 @@ void grabsharedmemory(int size)
       }
       else
       {
-	I_Error("could not get stats on key=%d", key);
+	fprintf(stderr, "could not get stats on key=%d\n", key);
+	return false;
       }
     }
     else
@@ -775,26 +794,153 @@ void grabsharedmemory(int size)
       if (id==-1)
       {
 	extern int errno;
-	fprintf(stderr, "errno=%d\n", errno);
-	I_Error("Could not get any shared memory");
+	fprintf(stderr, "shmget errno=%d\n", errno);
+	return false;
       }
       break;
     }
   } while (--pollution);
-  
+
   if (!pollution)
   {
-    I_Error("Sorry, system too polluted with stale "
-	    "shared memory segments.\n");
-    }	
-  
+    fprintf(stderr, "Sorry, system too polluted with stale "
+		     "shared memory segments.\n");
+    return false;
+  }
+
   X_shminfo.shmid = id;
-  
+
   // attach to the shared memory segment
   image->data = X_shminfo.shmaddr = shmat(id, 0, 0);
-  
+
+  // shmat() signals failure by returning (void*)-1, NOT NULL -- a
+  // pre-existing bug here checked for NULL, which shmat never returns.
+  if (image->data == (void*)-1)
+  {
+    fprintf(stderr, "shmat() failed\n");
+    shmctl(id, IPC_RMID, 0);
+    image->data = NULL;
+    return false;
+  }
+
   fprintf(stderr, "shared memory id=%d, addr=0x%x\n", id,
 	  (int) (image->data));
+
+  return true;
+}
+
+// Creates `image` (and attaches shared memory, if used) at the current
+// X_width/X_height. Used both for the initial window and to reallocate
+// on resize. macOS's default SysV shm limits (kern.sysv.shmall/shmmax)
+// are small (4MB total, system-wide, by default) and easy for a
+// Retina-resolution window to exceed -- grabsharedmemory() reports that
+// as a normal failure (returns false) rather than I_Error'ing, so we can
+// fall back to plain Xlib image transfer instead of crashing/exiting.
+static void I_CreateImage(void)
+{
+    if (doShm)
+    {
+	X_shmeventtype = XShmGetEventBase(X_display) + ShmCompletion;
+
+	image = XShmCreateImage(	X_display,
+					X_visual,
+					X_visualinfo.depth,
+					ZPixmap,
+					0,
+					&X_shminfo,
+					X_width,
+					X_height );
+
+	if (!image)
+	    I_Error("XShmCreateImage() failed in I_CreateImage()");
+
+	if (!grabsharedmemory(image->bytes_per_line * image->height))
+	{
+	    fprintf(stderr,
+		    "Could not allocate System V shared memory for a "
+		    "%dx%d window -- falling back to plain Xlib image "
+		    "transfer.\n", X_width, X_height);
+	    doShm = false;
+	}
+	else if (!XShmAttach(X_display, &X_shminfo))
+	{
+	    I_Error("XShmAttach() failed in I_CreateImage()");
+	}
+    }
+
+    if (!doShm)
+    {
+	image = XCreateImage(	X_display,
+				X_visual,
+				X_visualinfo.depth,
+				ZPixmap,
+				0,
+				(char*)malloc(X_width * X_height
+					      * (trueColor ? 4 : 1)),
+				X_width, X_height,
+				trueColor ? 32 : 8,
+				0 );
+
+	if (!image)
+	    I_Error("XCreateImage() failed in I_CreateImage()");
+    }
+
+    if (trueColor && image->bits_per_pixel != 32)
+	I_Error("Unsupported TrueColor pixel format (%d bits per pixel)",
+		image->bits_per_pixel);
+}
+
+// Tears down whatever I_CreateImage() set up, without touching X_display
+// or the window -- used both at shutdown and before reallocating on resize.
+static void I_DestroyImage(void)
+{
+    if (doShm)
+    {
+	// Deliberately not calling XDestroyImage() here: Xlib/XShm's cleanup
+	// path for shm-backed images isn't well-documented and risks a
+	// double shmdt/free. The small XImage struct this leaks per resize
+	// is a non-issue for a study binary.
+	if (!XShmDetach(X_display, &X_shminfo))
+	    I_Error("XShmDetach() failed in I_DestroyImage()");
+	shmdt(X_shminfo.shmaddr);
+	shmctl(X_shminfo.shmid, IPC_RMID, 0);
+	image->data = NULL;
+    }
+    else
+    {
+	XDestroyImage(image);
+    }
+}
+
+// Called from I_GetEvent() on ConfigureNotify (window resized, e.g. the
+// user dragged a corner or clicked the native macOS zoom/maximize button).
+// Reallocates `image` at the new size; screens[0] (the 320x200 paletted
+// framebuffer) never changes size, only how it gets scaled up in
+// I_FinishUpdate.
+static void I_ResizeGraphics(int neww, int newh)
+{
+    if (neww <= 0 || newh <= 0)
+	return;
+    if (neww == X_width && newh == X_height)
+	return;
+    // The PseudoColor byte-packing paths (multiply==2/3/4) and the
+    // screens[0]==image->data alias (multiply==1) assume a fixed size
+    // tied to `multiply` -- arbitrary live resize is TrueColor-only.
+    if (!trueColor)
+	return;
+
+    I_DestroyImage();
+    X_width = neww;
+    X_height = newh;
+    I_CreateImage();
+
+    // Force the server to drop whatever it had displayed at the old size
+    // and repaint the whole (new-size) window from scratch on the next
+    // I_FinishUpdate -- otherwise a stale frame can be left on screen
+    // after an animated resize/zoom until something else triggers a
+    // redraw.
+    XClearArea(X_display, X_mainWindow, 0, 0, 0, 0, False);
+    XSync(X_display, False);
 }
 
 void I_InitGraphics(void)
@@ -926,10 +1072,20 @@ void I_InitGraphics(void)
 	KeyPressMask
 	| KeyReleaseMask
 	// | PointerMotionMask | ButtonPressMask | ButtonReleaseMask
+	| StructureNotifyMask	// so we get ConfigureNotify on resize
 	| ExposureMask;
 
     attribs.colormap = X_cmap;
     attribs.border_pixel = 0;
+
+    if (trueColor)
+    {
+	// Any part of the window not covered by our (letterboxed, centered)
+	// image -- e.g. briefly during a resize/zoom animation -- shows
+	// this instead of an undefined/white default.
+	attribmask |= CWBackPixel;
+	attribs.background_pixel = BlackPixel(X_display, X_screen);
+    }
 
     // create the main window
     X_mainWindow = XCreateWindow(	X_display,
@@ -976,78 +1132,19 @@ void I_InitGraphics(void)
 		     GrabModeAsync, GrabModeAsync,
 		     X_mainWindow, None, CurrentTime);
 
-    if (doShm)
-    {
-
-	X_shmeventtype = XShmGetEventBase(X_display) + ShmCompletion;
-
-	// create the image
-	image = XShmCreateImage(	X_display,
-					X_visual,
-					X_visualinfo.depth,
-					ZPixmap,
-					0,
-					&X_shminfo,
-					X_width,
-					X_height );
-
-	grabsharedmemory(image->bytes_per_line * image->height);
-
-
-	// UNUSED
-	// create the shared memory segment
-	// X_shminfo.shmid = shmget (IPC_PRIVATE,
-	// image->bytes_per_line * image->height, IPC_CREAT | 0777);
-	// if (X_shminfo.shmid < 0)
-	// {
-	// perror("");
-	// I_Error("shmget() failed in InitGraphics()");
-	// }
-	// fprintf(stderr, "shared memory id=%d\n", X_shminfo.shmid);
-	// attach to the shared memory segment
-	// image->data = X_shminfo.shmaddr = shmat(X_shminfo.shmid, 0, 0);
-	
-
-	if (!image->data)
-	{
-	    perror("");
-	    I_Error("shmat() failed in InitGraphics()");
-	}
-
-	// get the X server to attach to it
-	if (!XShmAttach(X_display, &X_shminfo))
-	    I_Error("XShmAttach() failed in InitGraphics()");
-
-    }
-    else
-    {
-	image = XCreateImage(	X_display,
-    				X_visual,
-    				X_visualinfo.depth,
-    				ZPixmap,
-    				0,
-    				(char*)malloc(X_width * X_height
-					      * (trueColor ? 4 : 1)),
-    				X_width, X_height,
-    				trueColor ? 32 : 8,
-    				0 );
-
-    }
-
-    if (trueColor && image->bits_per_pixel != 32)
-	I_Error("Unsupported TrueColor pixel format (%d bits per pixel)",
-		image->bits_per_pixel);
+    I_CreateImage();
 
     // With a TrueColor display, image->data holds real RGB pixels, so the
     // engine's 8-bit paletted framebuffer has to live in its own buffer
     // and get expanded through truecolorLUT every frame (see
     // I_FinishUpdate). With PseudoColor, the engine can keep writing
-    // palette indices directly into what the X server displays.
+    // palette indices directly into what the X server displays. Either
+    // way this is sized for the native 320x200 buffer only, and doesn't
+    // need to change on a later resize.
     if (!trueColor && multiply == 1)
 	screens[0] = (unsigned char *) (image->data);
     else
 	screens[0] = (unsigned char *) malloc (SCREENWIDTH * SCREENHEIGHT);
-
 }
 
 

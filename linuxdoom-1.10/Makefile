@@ -81,7 +81,7 @@ WAD=doom1.wad
 
 # Janela maior via upscale nearest-neighbor (ver i_video.c):
 # 1 = 320x200 (nativo), 2 = 640x400, 3 = 960x600, 4 = 1280x800.
-MULTIPLY=3
+MULTIPLY=4
 
 .PHONY: all clean run
 
@@ -98,13 +98,15 @@ $(O)/linuxxdoom:	$(OBJS) $(O)/i_main.o
 $(O)/%.o:	%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# macOS: garante o servidor X (XQuartz) de pé e roda o jogo.
+# macOS: builda (se precisar), garante o servidor X (XQuartz) de pé e
+# roda o jogo. Depende de "all" explicitamente para deixar claro que
+# sempre builda antes de rodar.
 # O XQuartz sobe o X server sob demanda (launchd) na primeira conexao de
 # um cliente X11 de verdade -- nao da pra detectar isso de fora de forma
 # confiavel, entao so damos um tempo. Se ainda assim faltar (primeira vez
 # depois de reiniciar o Mac), o jogo agora sai limpo com uma mensagem de
 # erro (nao trava mais) -- e so rodar 'make run' de novo.
-run:	$(O)/linuxxdoom
+run:	all
 	@test -f $(WAD) || { \
 		echo "Falta $(WAD) em $$(pwd) -- baixe o shareware original (livre) e coloque aqui."; \
 		exit 1; \

@@ -42,16 +42,17 @@ Compila se preciso, garante que o XQuartz está de pé e roda o jogo com
 cd linuxdoom-1.10
 open -a XQuartz          # garante que o servidor X está de pé
 export DISPLAY=:0
-./linux/linuxxdoom -iwad doom1.wad -3
+./linux/linuxxdoom -iwad doom1.wad -4
 ```
 
 A resolução interna do Doom é fixa em 320×200 — não dá pra pedir uma
 resolução arbitrária, só escalar por um fator inteiro. `make run` usa
-`MULTIPLY=3` por padrão (960×600, upscale nearest-neighbor). Pra mudar:
+`MULTIPLY=4` por padrão (1280×800, upscale nearest-neighbor, o maior
+suportado). Pra mudar:
 
 ```
 make run MULTIPLY=2   # 640x400
-make run MULTIPLY=4   # 1280x800
+make run MULTIPLY=3   # 960x600
 ```
 
 Roda sem áudio (fora de escopo do porte por ora — ver
