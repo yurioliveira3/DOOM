@@ -1,8 +1,7 @@
 # Ideia: documentação do código + novo README
 
-Status: apenas ideia — sem plano de execução. Cotado como possível
-próximo passo depois que `porte-macos.md` estiver funcionando (ver
-`INDICE.md` para a ordem/prioridade atual).
+Status: em andamento. `porte-macos.md` já está funcionando, então esse
+passo foi liberado (ver `INDICE.md`).
 
 ## Contexto
 
@@ -40,3 +39,22 @@ as peças do engine se encaixam.
   que ainda não roda).
 - A documentação por arquivo pode começar antes disso, só lendo o
   código — não depende do build.
+
+## Decisões tomadas
+
+- **`README.TXT` fica onde está**, na raiz — não foi movido pra
+  `docs/`. É a carta original do Carmack, curta, e continuar na raiz
+  mantém o contexto de "isto é o release original" sem exigir que
+  quem clona o repo abra uma subpasta pra achar. O novo `README.md`
+  referencia ele claramente no fim, em vez de escondê-lo.
+
+## Histórico de decisões / atualizações
+
+- 2026-07-12: escrito `docs/arquitetura.md` (camadas do engine,
+  diagrama de um frame em Mermaid, papel de cada grupo de arquivo
+  `p_*`/`r_*`/`i_*`/etc.) e reescrito `README.md` da raiz com visão
+  geral do fork, instruções de build/rodar já atualizadas do porte,
+  link pra `docs/arquitetura.md` e pra `docs/notes/`, e seção final
+  apontando pro `README.TXT`/`LICENSE.TXT` originais. Falta ainda:
+  espaço de imagens de gameplay (depende de rodar o jogo manualmente
+  e capturar prints, não é algo que dá pra gerar sem interação).
