@@ -532,8 +532,10 @@ void P_GroupLines (void)
 	}
     }
 	
-    // build line tables for each sector	
-    linebuffer = Z_Malloc (total*4, PU_LEVEL, 0);
+    // build line tables for each sector
+    // linebuffer is line_t** (array of pointers): size by sizeof(*linebuffer),
+    // not a hardcoded 4 -- that only matched 32-bit pointers.
+    linebuffer = Z_Malloc (total*sizeof(*linebuffer), PU_LEVEL, 0);
     sector = sectors;
     for (i=0 ; i<numsectors ; i++, sector++)
     {

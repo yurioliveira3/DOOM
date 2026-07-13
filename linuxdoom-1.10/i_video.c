@@ -46,7 +46,7 @@ int XShmGetEventBase( Display* dpy ); // problems with g++?
 #include <sys/socket.h>
 
 #include <netinet/in.h>
-#include <errnos.h>
+#include <errno.h>
 #include <signal.h>
 
 #include "doomstat.h"
@@ -70,6 +70,12 @@ XVisualInfo	X_visualinfo;
 XImage*		image;
 int		X_width;
 int		X_height;
+
+// True when running on a TrueColor (24/32-bit) visual instead of the
+// original 256-color PseudoColor one. Modern X servers (XQuartz included)
+// essentially never offer an 8-bit PseudoColor visual anymore.
+boolean		trueColor;
+static unsigned int	truecolorLUT[256];
 
 // MIT SHared Memory extension.
 boolean		doShm;
@@ -163,6 +169,13 @@ int xlatekey(void)
 
 void I_ShutdownGraphics(void)
 {
+  // I_Error() calls this unconditionally, including when I_InitGraphics()
+  // never got far enough to open a display (e.g. no X server running) --
+  // nothing to tear down in that case, and calling into Xlib with a NULL
+  // display crashes.
+  if (!X_display)
+      return;
+
   // Detach from X server
   if (!XShmDetach(X_display, &X_shminfo))
 	    I_Error("XShmDetach() failed in I_ShutdownGraphics()");
@@ -374,7 +387,45 @@ void I_FinishUpdate (void)
     }
 
     // scales the screen size before blitting it
-    if (multiply == 2)
+    if (trueColor)
+    {
+	// Expand palette indices to real RGB pixels (via truecolorLUT) and,
+	// if multiply > 1, upscale with simple nearest-neighbor repetition.
+	// This replaces the PseudoColor-only byte-packing tricks below,
+	// which assumed a pixel format that doesn't apply here.
+	byte*		src = screens[0];
+	unsigned int*	dst = (unsigned int*) image->data;
+	int		x, y, mx, my;
+	unsigned int	color;
+
+	if (multiply == 1)
+	{
+	    int n = SCREENWIDTH * SCREENHEIGHT;
+	    while (n--)
+		*dst++ = truecolorLUT[*src++];
+	}
+	else
+	{
+	    for (y=0 ; y<SCREENHEIGHT ; y++)
+	    {
+		unsigned int* rowstart = dst;
+
+		for (x=0 ; x<SCREENWIDTH ; x++)
+		{
+		    color = truecolorLUT[*src++];
+		    for (mx=0 ; mx<multiply ; mx++)
+			*dst++ = color;
+		}
+
+		for (my=1 ; my<multiply ; my++)
+		{
+		    memcpy(dst, rowstart, X_width * sizeof(unsigned int));
+		    dst += X_width;
+		}
+	    }
+	}
+    }
+    else if (multiply == 2)
     {
 	unsigned int *olineptrs[2];
 	unsigned int *ilineptr;
@@ -535,6 +586,32 @@ void I_ReadScreen (byte* scr)
 //
 static XColor	colors[256];
 
+// Number of trailing zero bits in a color mask (e.g. 0xff0000 -> 16).
+static int maskShift(unsigned long mask)
+{
+    int shift = 0;
+    if (!mask)
+	return 0;
+    while (!(mask & 1))
+    {
+	mask >>= 1;
+	shift++;
+    }
+    return shift;
+}
+
+// Number of set bits in a right-aligned color mask (e.g. 0xff -> 8).
+static int maskBits(unsigned long mask)
+{
+    int bits = 0;
+    while (mask & 1)
+    {
+	mask >>= 1;
+	bits++;
+    }
+    return bits;
+}
+
 void UploadNewPalette(Colormap cmap, byte *palette)
 {
 
@@ -573,6 +650,37 @@ void UploadNewPalette(Colormap cmap, byte *palette)
 	    // store the colors to the current colormap
 	    XStoreColors(X_display, cmap, colors, 256);
 
+	}
+    else if (trueColor)
+	{
+	    // Build a index->pixel lookup table using the visual's real
+	    // channel masks, so this works regardless of RGB/BGR ordering
+	    // or exact bit layout (24 vs 32 bpp).
+	    static int	rShift, gShift, bShift;
+	    static int	rBits, gBits, bBits;
+
+	    if (firstcall)
+	    {
+		firstcall = false;
+		rShift = maskShift(X_visualinfo.red_mask);
+		gShift = maskShift(X_visualinfo.green_mask);
+		bShift = maskShift(X_visualinfo.blue_mask);
+		rBits = maskBits(X_visualinfo.red_mask >> rShift);
+		gBits = maskBits(X_visualinfo.green_mask >> gShift);
+		bBits = maskBits(X_visualinfo.blue_mask >> bShift);
+	    }
+
+	    for (i=0 ; i<256 ; i++)
+	    {
+		unsigned int r = gammatable[usegamma][*palette++];
+		unsigned int g = gammatable[usegamma][*palette++];
+		unsigned int b = gammatable[usegamma][*palette++];
+
+		truecolorLUT[i] =
+		    ((r >> (8 - rBits)) << rShift)
+		    | ((g >> (8 - gBits)) << gShift)
+		    | ((b >> (8 - bBits)) << bShift);
+	    }
 	}
 }
 
@@ -766,10 +874,25 @@ void I_InitGraphics(void)
 	    I_Error("Could not open display (DISPLAY=[%s])", getenv("DISPLAY"));
     }
 
-    // use the default visual 
+    // use the default visual
     X_screen = DefaultScreen(X_display);
-    if (!XMatchVisualInfo(X_display, X_screen, 8, PseudoColor, &X_visualinfo))
-	I_Error("xdoom currently only supports 256-color PseudoColor screens");
+    if (XMatchVisualInfo(X_display, X_screen, 8, PseudoColor, &X_visualinfo))
+    {
+	trueColor = false;
+    }
+    else if (XMatchVisualInfo(X_display, X_screen, 32, TrueColor, &X_visualinfo)
+	     || XMatchVisualInfo(X_display, X_screen, 24, TrueColor, &X_visualinfo))
+    {
+	// multiply (-2/-3/-4) is handled generically for TrueColor by
+	// I_FinishUpdate's index->RGB expansion loop (nearest-neighbor
+	// upscale), unlike the PseudoColor byte-packing tricks below.
+	trueColor = true;
+    }
+    else
+    {
+	I_Error("xdoom requires either a 256-color PseudoColor screen "
+		"or a 24/32-bit TrueColor screen");
+    }
     X_visual = X_visualinfo.visual;
 
     // check for the MITSHM extension
@@ -791,8 +914,11 @@ void I_InitGraphics(void)
     fprintf(stderr, "Using MITSHM extension\n");
 
     // create the colormap
+    // TrueColor visuals are read-only; AllocAll is only valid for
+    // PseudoColor, where we own and rewrite the whole palette ourselves.
     X_cmap = XCreateColormap(X_display, RootWindow(X_display,
-						   X_screen), X_visual, AllocAll);
+						   X_screen), X_visual,
+			      trueColor ? AllocNone : AllocAll);
 
     // setup attributes for main window
     attribmask = CWEventMask | CWColormap | CWBorderPixel;
@@ -811,7 +937,7 @@ void I_InitGraphics(void)
 					x, y,
 					X_width, X_height,
 					0, // borderwidth
-					8, // depth
+					X_visualinfo.depth, // depth
 					InputOutput,
 					X_visual,
 					attribmask,
@@ -858,7 +984,7 @@ void I_InitGraphics(void)
 	// create the image
 	image = XShmCreateImage(	X_display,
 					X_visual,
-					8,
+					X_visualinfo.depth,
 					ZPixmap,
 					0,
 					&X_shminfo,
@@ -897,17 +1023,27 @@ void I_InitGraphics(void)
     {
 	image = XCreateImage(	X_display,
     				X_visual,
-    				8,
+    				X_visualinfo.depth,
     				ZPixmap,
     				0,
-    				(char*)malloc(X_width * X_height),
+    				(char*)malloc(X_width * X_height
+					      * (trueColor ? 4 : 1)),
     				X_width, X_height,
-    				8,
-    				X_width );
+    				trueColor ? 32 : 8,
+    				0 );
 
     }
 
-    if (multiply == 1)
+    if (trueColor && image->bits_per_pixel != 32)
+	I_Error("Unsupported TrueColor pixel format (%d bits per pixel)",
+		image->bits_per_pixel);
+
+    // With a TrueColor display, image->data holds real RGB pixels, so the
+    // engine's 8-bit paletted framebuffer has to live in its own buffer
+    // and get expanded through truecolorLUT every frame (see
+    // I_FinishUpdate). With PseudoColor, the engine can keep writing
+    // palette indices directly into what the X server displays.
+    if (!trueColor && multiply == 1)
 	screens[0] = (unsigned char *) (image->data);
     else
 	screens[0] = (unsigned char *) malloc (SCREENWIDTH * SCREENHEIGHT);

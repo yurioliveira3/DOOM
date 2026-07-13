@@ -18,6 +18,10 @@ core
 # pode conter permissões e caminhos locais.
 .claude/settings.local.json
 
+# Contexto pessoal de sessão (Claude Code) para este repositório —
+# resumo do estado atual do projeto, não destinado a versionamento.
+CLAUDE.md
+
 # macOS
 .DS_Store
 .AppleDouble

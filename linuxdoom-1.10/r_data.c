@@ -27,6 +27,8 @@
 static const char
 rcsid[] = "$Id: r_data.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 
+#include <stdint.h>
+
 #include "i_system.h"
 #include "z_zone.h"
 
@@ -41,9 +43,7 @@ rcsid[] = "$Id: r_data.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 #include "doomstat.h"
 #include "r_sky.h"
 
-#ifdef LINUX
 #include  <alloca.h>
-#endif
 
 
 #include "r_data.h"
@@ -84,10 +84,14 @@ typedef struct
 typedef struct
 {
     char		name[8];
-    boolean		masked;	
+    boolean		masked;
     short		width;
     short		height;
-    void		**columndirectory;	// OBSOLETE
+    // OBSOLETE, never dereferenced at runtime -- but its on-disk size
+    // matters: the WAD binary format reserves a 4-byte slot here, so this
+    // has to stay a fixed 32-bit type. A pointer would be 8 bytes on a
+    // 64-bit host, shifting patchcount/patches[] to the wrong file offset.
+    int			columndirectory;	// OBSOLETE
     short		patchcount;
     mappatch_t	patches[1];
 } maptexture_t;
@@ -479,10 +483,14 @@ void R_InitTextures (void)
     }
     numtextures = numtextures1 + numtextures2;
 	
-    textures = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecolumnlump = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecolumnofs = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecomposite = Z_Malloc (numtextures*4, PU_STATIC, 0);
+    // NOTE: these four are arrays of pointers (texture_t*/short*/
+    // unsigned short*/byte*), not plain ints -- must size by
+    // sizeof(*array), not a hardcoded 4 (which only matched 32-bit
+    // pointers and silently under-allocates on 64-bit hosts).
+    textures = Z_Malloc (numtextures*sizeof(*textures), PU_STATIC, 0);
+    texturecolumnlump = Z_Malloc (numtextures*sizeof(*texturecolumnlump), PU_STATIC, 0);
+    texturecolumnofs = Z_Malloc (numtextures*sizeof(*texturecolumnofs), PU_STATIC, 0);
+    texturecomposite = Z_Malloc (numtextures*sizeof(*texturecomposite), PU_STATIC, 0);
     texturecompositesize = Z_Malloc (numtextures*4, PU_STATIC, 0);
     texturewidthmask = Z_Malloc (numtextures*4, PU_STATIC, 0);
     textureheight = Z_Malloc (numtextures*4, PU_STATIC, 0);
@@ -638,8 +646,11 @@ void R_InitColormaps (void)
     //  256 byte align tables.
     lump = W_GetNumForName("COLORMAP"); 
     length = W_LumpLength (lump) + 255; 
-    colormaps = Z_Malloc (length, PU_STATIC, 0); 
-    colormaps = (byte *)( ((int)colormaps + 255)&~0xff); 
+    colormaps = Z_Malloc (length, PU_STATIC, 0);
+    // Align to a 256-byte boundary. Must round-trip through a pointer-sized
+    // integer (not int): on a 64-bit host, truncating through int drops the
+    // upper bits of the address and produces a garbage pointer.
+    colormaps = (byte *)( ((uintptr_t)colormaps + 255) & ~(uintptr_t)0xff);
     W_ReadLump (lump,colormaps); 
 }
 

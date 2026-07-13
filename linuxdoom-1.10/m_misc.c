@@ -225,8 +225,14 @@ extern char*	chat_macros[];
 typedef struct
 {
     char*	name;
-    int*	location;
+    void*	location;
     int		defaultvalue;
+    // Non-NULL if this default's real value/storage is a string (char*)
+    // rather than a plain int. Needed on 64-bit: a pointer doesn't fit in
+    // (and can't be reconstructed by truncating through) a 32-bit int, and
+    // casting a string literal's address to int isn't a constant expression
+    // clang accepts in a static initializer either way.
+    char*	defaultstring;
     int		scantranslate;		// PC scan code hack
     int		untranslated;		// lousy hack
 } default_t;
@@ -237,7 +243,7 @@ default_t	defaults[] =
     {"sfx_volume",&snd_SfxVolume, 8},
     {"music_volume",&snd_MusicVolume, 8},
     {"show_messages",&showMessages, 1},
-    
+
 
 #ifdef NORMALUNIX
     {"key_right",&key_right, KEY_RIGHTARROW},
@@ -252,17 +258,17 @@ default_t	defaults[] =
     {"key_strafe",&key_strafe, KEY_RALT},
     {"key_speed",&key_speed, KEY_RSHIFT},
 
-// UNIX hack, to be removed. 
+// UNIX hack, to be removed.
 #ifdef SNDSERV
-    {"sndserver", (int *) &sndserver_filename, (int) "sndserver"},
+    {"sndserver", &sndserver_filename, 0, "sndserver"},
     {"mb_used", &mb_used, 2},
 #endif
-    
+
 #endif
 
 #ifdef LINUX
-    {"mousedev", (int*)&mousedev, (int)"/dev/ttyS0"},
-    {"mousetype", (int*)&mousetype, (int)"microsoft"},
+    {"mousedev", &mousedev, 0, "/dev/ttyS0"},
+    {"mousetype", &mousetype, 0, "microsoft"},
 #endif
 
     {"use_mouse",&usemouse, 1},
@@ -285,16 +291,16 @@ default_t	defaults[] =
 
     {"usegamma",&usegamma, 0},
 
-    {"chatmacro0", (int *) &chat_macros[0], (int) HUSTR_CHATMACRO0 },
-    {"chatmacro1", (int *) &chat_macros[1], (int) HUSTR_CHATMACRO1 },
-    {"chatmacro2", (int *) &chat_macros[2], (int) HUSTR_CHATMACRO2 },
-    {"chatmacro3", (int *) &chat_macros[3], (int) HUSTR_CHATMACRO3 },
-    {"chatmacro4", (int *) &chat_macros[4], (int) HUSTR_CHATMACRO4 },
-    {"chatmacro5", (int *) &chat_macros[5], (int) HUSTR_CHATMACRO5 },
-    {"chatmacro6", (int *) &chat_macros[6], (int) HUSTR_CHATMACRO6 },
-    {"chatmacro7", (int *) &chat_macros[7], (int) HUSTR_CHATMACRO7 },
-    {"chatmacro8", (int *) &chat_macros[8], (int) HUSTR_CHATMACRO8 },
-    {"chatmacro9", (int *) &chat_macros[9], (int) HUSTR_CHATMACRO9 }
+    {"chatmacro0", &chat_macros[0], 0, HUSTR_CHATMACRO0 },
+    {"chatmacro1", &chat_macros[1], 0, HUSTR_CHATMACRO1 },
+    {"chatmacro2", &chat_macros[2], 0, HUSTR_CHATMACRO2 },
+    {"chatmacro3", &chat_macros[3], 0, HUSTR_CHATMACRO3 },
+    {"chatmacro4", &chat_macros[4], 0, HUSTR_CHATMACRO4 },
+    {"chatmacro5", &chat_macros[5], 0, HUSTR_CHATMACRO5 },
+    {"chatmacro6", &chat_macros[6], 0, HUSTR_CHATMACRO6 },
+    {"chatmacro7", &chat_macros[7], 0, HUSTR_CHATMACRO7 },
+    {"chatmacro8", &chat_macros[8], 0, HUSTR_CHATMACRO8 },
+    {"chatmacro9", &chat_macros[9], 0, HUSTR_CHATMACRO9 }
 
 };
 
@@ -317,10 +323,9 @@ void M_SaveDefaults (void)
 		
     for (i=0 ; i<numdefaults ; i++)
     {
-	if (defaults[i].defaultvalue > -0xfff
-	    && defaults[i].defaultvalue < 0xfff)
+	if (!defaults[i].defaultstring)
 	{
-	    v = *defaults[i].location;
+	    v = *(int *) defaults[i].location;
 	    fprintf (f,"%s\t\t%i\n",defaults[i].name,v);
 	} else {
 	    fprintf (f,"%s\t\t\"%s\"\n",defaults[i].name,
@@ -351,7 +356,12 @@ void M_LoadDefaults (void)
     // set everything to base values
     numdefaults = sizeof(defaults)/sizeof(defaults[0]);
     for (i=0 ; i<numdefaults ; i++)
-	*defaults[i].location = defaults[i].defaultvalue;
+    {
+	if (!defaults[i].defaultstring)
+	    *(int *) defaults[i].location = defaults[i].defaultvalue;
+	else
+	    *(char **) defaults[i].location = defaults[i].defaultstring;
+    }
     
     // check for a custom default file
     i = M_CheckParm ("-config");
@@ -389,10 +399,9 @@ void M_LoadDefaults (void)
 		    if (!strcmp(def, defaults[i].name))
 		    {
 			if (!isstring)
-			    *defaults[i].location = parm;
+			    *(int *) defaults[i].location = parm;
 			else
-			    *defaults[i].location =
-				(int) newstring;
+			    *(char **) defaults[i].location = newstring;
 			break;
 		    }
 	    }
