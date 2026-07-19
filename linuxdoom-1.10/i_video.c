@@ -950,6 +950,23 @@ static void I_ResizeGraphics(int neww, int newh)
     XSync(X_display, False);
 }
 
+// Quitting the whole X server (e.g. Cmd+Q on XQuartz, or the "X11" app
+// being force-quit) doesn't send WM_DELETE_WINDOW -- it just drops the
+// socket, so I_GetEvent()'s ClientMessage handling never runs and I_Quit()
+// never gets a chance to shmdt()/shmctl(IPC_RMID) an in-use MITSHM segment.
+// This is Xlib's hook for that case: the connection is already dead here,
+// so we can't make further Xlib calls, but shmdt/shmctl are plain syscalls
+// and still work.
+static int I_IOErrorHandler(Display *dpy)
+{
+    if (doShm && X_shminfo.shmaddr)
+    {
+	shmdt(X_shminfo.shmaddr);
+	shmctl(X_shminfo.shmid, IPC_RMID, 0);
+    }
+    exit(1);
+}
+
 void I_InitGraphics(void)
 {
 
@@ -1026,6 +1043,8 @@ void I_InitGraphics(void)
 	else
 	    I_Error("Could not open display (DISPLAY=[%s])", getenv("DISPLAY"));
     }
+
+    XSetIOErrorHandler(I_IOErrorHandler);
 
     // use the default visual
     X_screen = DefaultScreen(X_display);
