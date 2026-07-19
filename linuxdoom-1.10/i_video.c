@@ -193,6 +193,8 @@ void I_StartFrame (void)
 
 }
 
+static Atom	wm_delete_window;
+
 static int	lastmousex = 0;
 static int	lastmousey = 0;
 boolean		mousemoved = false;
@@ -281,6 +283,11 @@ void I_GetEvent(void)
 	// Window was resized (drag, or the native macOS zoom/maximize
 	// button) -- reallocate the image to match.
 	I_ResizeGraphics(X_event.xconfigure.width, X_event.xconfigure.height);
+	break;
+
+      case ClientMessage:
+	if ((Atom) X_event.xclient.data.l[0] == wm_delete_window)
+	    I_Quit();
 	break;
 
       default:
@@ -1101,6 +1108,14 @@ void I_InitGraphics(void)
 
     XDefineCursor(X_display, X_mainWindow,
 		  createnullcursor( X_display, X_mainWindow ) );
+
+    // Without this, the native red close button just kills the X
+    // connection (no WM_DELETE_WINDOW ClientMessage is sent), so the
+    // process dies without running I_Quit() -- and, if shared memory is
+    // in use, without shmdt()/shmctl(IPC_RMID) freeing it. That leaves
+    // the SysV shm segment orphaned in the kernel past process exit.
+    wm_delete_window = XInternAtom(X_display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(X_display, X_mainWindow, &wm_delete_window, 1);
 
     // create the GC
     valuemask = GCGraphicsExposures;
