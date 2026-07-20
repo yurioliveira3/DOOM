@@ -1,9 +1,11 @@
 # Plano: porte do linuxdoom-1.10 para compilar/rodar no macOS
 
 Branch: `port/macos-build`
-Status: **rodando e renderizando corretamente.** Compilação limpa, jogo
-testado abrindo janela via XQuartz com cores corretas (TrueColor). Ver
-"Comando para rodar" no fim deste documento.
+Status: **concluído.** Compilação limpa, jogo testado abrindo janela via
+XQuartz com cores corretas (TrueColor), janela redimensionável, sem
+vazamento de shared memory ao fechar (janela nativa ou `Cmd+Q`), e com
+áudio funcionando via SDL2. Ver "Comando para rodar" no fim deste
+documento.
 
 ## Objetivo
 
@@ -26,8 +28,9 @@ implementado:
 - `i_sound.c`: `SNDSERV=1` (default, `doomdef.h:84`) já usa um processo
   externo via pipe e não executa o setup OSS. Único bloqueio de
   compilação: `#include <linux/soundcard.h>` incondicional — isolado
-  atrás de `#ifdef __linux__`. Áudio de fato fica fora de escopo, jogo
-  roda mudo.
+  atrás de `#ifdef __linux__`. Naquele momento o áudio ficou fora de
+  escopo (jogo rodava mudo) — porte de fato feito depois, ver seção
+  "Implementação — áudio via SDL2" abaixo.
 - `m_bbox.h`: `values.h` (não existe no macOS) → `limits.h`;
   `m_bbox.c` (único consumidor de `MAXINT`/`MININT` vindos desse header):
   → `INT_MAX`/`INT_MIN`.
@@ -190,6 +193,57 @@ o backtrace de cada crash, um de cada vez:
    `-Wpointer-to-int-cast` do compilador — não é uma correção de bug,
    é limpeza.
 
+## Implementação — vazamento de shared memory ao fechar
+
+O jogo aloca um segmento de shared memory SysV (via MITSHM, usado pra
+`XShmPutImage`) que só é liberado (`shmdt`/`shmctl(IPC_RMID)`) dentro do
+shutdown normal (`I_Quit`). Isso é diferente de um vazamento de heap
+comum (sempre reclamado pelo SO quando o processo morre) — é um recurso
+de kernel que sobrevive ao processo se ele morrer sem passar por
+`I_Quit`, ficando órfão (visível em `ipcs -m`).
+
+Dois caminhos de saída não passavam por `I_Quit`, cada um corrigido em
+`i_video.c`:
+
+- **Fechar pela janela nativa (botão vermelho)**: por padrão isso só
+  mata a conexão X, sem mandar nenhum evento pro processo. Corrigido
+  registrando o protocolo `WM_DELETE_WINDOW` (`XSetWMProtocols`) e
+  tratando o `ClientMessage` correspondente em `I_GetEvent()`, chamando
+  `I_Quit()`.
+- **`Cmd+Q` no XQuartz (mata o servidor X inteiro)**: nesse caso nem o
+  `ClientMessage` chega — o socket X cai abruptamente (`XIO fatal
+  error`). Corrigido com `XSetIOErrorHandler`, que roda mesmo com a
+  conexão X já morta (faz só `shmdt`/`shmctl` via syscall direto, sem
+  Xlib).
+
+Os dois fixes foram validados ao vivo (`ipcs -m` antes/depois de fechar
+por cada um dos dois caminhos) — segmento sempre limpo.
+
+## Implementação — áudio via SDL2
+
+O mixer em software original (`addsfx`, `I_UpdateSound` em
+`i_sound.c`) já era portável — só a ponta de hardware (abrir
+`/dev/dsp`, `ioctl`s OSS, `write()`) era específica de Linux. Portado
+para SDL2 (já disponível via Homebrew):
+
+- `doomdef.h`: `SNDSERV` desativado, pra cair no branch de mixagem
+  síncrona interna em vez do processo externo `sndserver` (que nunca
+  foi buildado no porte).
+- `i_sound.c`: `open`/`ioctl`/`write`/`close` do `/dev/dsp` trocados
+  por `SDL_OpenAudioDevice`/`SDL_QueueAudio`/`SDL_CloseAudioDevice`,
+  isolados atrás de `#ifdef __linux__` (o caminho OSS original
+  continua intacto pra quem compilar em Linux de verdade).
+- Como `SDL_QueueAudio` não bloqueia (diferente do `write()` original,
+  que servia de pacer natural), e o loop principal roda sem
+  vsync/limite de FPS, foi adicionado um limite simples de fila em
+  `I_SubmitSound` (não enfileira se já houver mais que ~3 buffers
+  pendentes) — evita crescimento sem controle da latência.
+- `Makefile`: `brew --prefix sdl2` resolve hoje pro alias
+  `sdl2-compat` (que não tem os headers reais instalados nesse
+  Homebrew) — contornado apontando direto pro keg `opt/sdl2`.
+- Testado ao vivo: efeitos sonoros (tiros, portas, itens) tocando
+  corretamente, sem crackling perceptível.
+
 ## Comando para rodar
 
 ```
@@ -200,19 +254,19 @@ export DISPLAY=:0
 ```
 
 Testado: a janela abre via MITSHM, mostra a tela de créditos da id
-Software com cores corretas (confirma o patch de TrueColor), e o
-processo roda estável. Sem áudio (fora de escopo, ver "Decisões em
-aberto"). Aviso esperado no log, sem impacto: `Could not start sound
-server [sndserver]` e `Demo is from a different game version!`
-(reclama do demo de abertura embutido no WAD shareware, não trava nada).
-
-## Decisões em aberto
-
-- Áudio: aceitar rodar mudo por ora, ou já partir para um stub/rewrite
-  mínimo (CoreAudio ou SDL_mixer)? — ainda não decidido; não bloqueia a
-  validação visual.
+Software com cores corretas (confirma o patch de TrueColor), o processo
+roda estável, fecha sem vazar shared memory (janela nativa ou `Cmd+Q`),
+e o áudio toca via SDL2. Aviso esperado no log, sem impacto: `Demo is
+from a different game version!` (reclama do demo de abertura embutido
+no WAD shareware, não trava nada).
 
 ## Decisões tomadas
+
+- **SDL2 em vez de CoreAudio puro para o áudio.** O mixer em software
+  original já era portável; só a saída de hardware precisava trocar.
+  SDL2 cobre isso com poucas chamadas (API C simples, já disponível via
+  Homebrew), evitando a complexidade de AudioQueue/AudioUnit em
+  CoreAudio puro para um ganho que não justificaria o código extra.
 
 - **WAD fora do repositório.** `doom1.wad` não é versionado — dado de
   jogo licenciado pela id Software/ZeniMax, separado do código GPL do
@@ -265,3 +319,14 @@ server [sndserver]` e `Demo is from a different game version!`
   `p_saveg.c` (~12 casts `(int)ponteiro` no save/load) — concluído que
   não é bug real (swizzling autoconsistente), só trocado por
   `intptr_t`/`uintptr_t` por precisão de tipo e para eliminar warnings.
+- 2026-07-19: usuário reportou vazamento real (segmento de shared
+  memory SysV órfão após fechar o jogo). Corrigido em dois commits:
+  `WM_DELETE_WINDOW` pro fechamento pela janela nativa, e
+  `XSetIOErrorHandler` pro fechamento via `Cmd+Q`/kill do servidor X
+  (ver "Implementação — vazamento de shared memory ao fechar"). Ambos
+  validados ao vivo com `ipcs -m`.
+- 2026-07-19: áudio portado para SDL2 (ver "Implementação — áudio via
+  SDL2"). O mixer em software original já era portável; só a saída de
+  hardware específica de Linux (`/dev/dsp`/OSS) precisou trocar.
+  Testado ao vivo, efeitos sonoros funcionando. Porte macOS considerado
+  concluído nesse ponto — sem pendências conhecidas.
