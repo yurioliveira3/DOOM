@@ -6,9 +6,12 @@
 #
 CC=  cc  # gcc or g++
 
-CFLAGS=-g -Wall -DNORMALUNIX $(shell pkg-config --cflags x11 xext xorgproto 2>/dev/null || echo -I$(shell brew --prefix libx11)/include -I$(shell brew --prefix libxext)/include -I$(shell brew --prefix xorgproto)/include) # -DUSEASM
-LDFLAGS=$(shell pkg-config --libs-only-L x11 xext 2>/dev/null || echo -L$(shell brew --prefix libx11)/lib -L$(shell brew --prefix libxext)/lib)
-LIBS=-lXext -lX11 -lm
+# Nota: "brew --prefix sdl2" resolve para sdl2-compat (que sdl2 hoje
+# aponta como alias no Homebrew) e não tem os headers de verdade, por
+# isso aqui usamos direto o keg opt/sdl2 (o pacote sdl2 real).
+CFLAGS=-g -Wall -DNORMALUNIX $(shell pkg-config --cflags x11 xext xorgproto 2>/dev/null || echo -I$(shell brew --prefix libx11)/include -I$(shell brew --prefix libxext)/include -I$(shell brew --prefix xorgproto)/include) -I$(shell brew --prefix)/opt/sdl2/include/SDL2 # -DUSEASM
+LDFLAGS=$(shell pkg-config --libs-only-L x11 xext 2>/dev/null || echo -L$(shell brew --prefix libx11)/lib -L$(shell brew --prefix libxext)/lib) -L$(shell brew --prefix)/opt/sdl2/lib
+LIBS=-lXext -lX11 -lm -lSDL2
 
 # subdirectory for objects
 O=linux

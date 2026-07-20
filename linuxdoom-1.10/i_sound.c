@@ -44,6 +44,8 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 // Linux voxware output.
 #ifdef __linux__
 #include <linux/soundcard.h>
+#else
+#include <SDL.h>
 #endif
 
 // Timer stuff. Experimental.
@@ -105,7 +107,11 @@ static int flag = 0;
 int 		lengths[NUMSFX];
 
 // The actual output device.
+#ifdef __linux__
 int	audio_fd;
+#else
+static SDL_AudioDeviceID audio_dev;
+#endif
 
 // The global mixing buffer.
 // Basically, samples from all active internal channels
@@ -667,8 +673,17 @@ void I_UpdateSound( void )
 void
 I_SubmitSound(void)
 {
+#ifdef __linux__
   // Write it to DSP device.
   write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
+#else
+  // SDL_QueueAudio doesn't block like the OSS write() above did, so
+  // without this check the queue grows without bound (this loop has no
+  // vsync/frame limiter): keep at most ~3 buffers queued, drop this one
+  // if the audio thread is already behind.
+  if (SDL_GetQueuedAudioSize(audio_dev) <= 3 * SAMPLECOUNT*BUFMUL)
+    SDL_QueueAudio(audio_dev, mixbuffer, SAMPLECOUNT*BUFMUL);
+#endif
 }
 
 
@@ -722,9 +737,13 @@ void I_ShutdownSound(void)
 #ifdef SNDINTR
   I_SoundDelTimer();
 #endif
-  
+
   // Cleaning up -releasing the DSP device.
+#ifdef __linux__
   close ( audio_fd );
+#else
+  SDL_CloseAudioDevice ( audio_dev );
+#endif
 #endif
 
   // Done.
@@ -768,29 +787,50 @@ I_InitSound()
     
   // Secure and configure sound device first.
   fprintf( stderr, "I_InitSound: ");
-  
+
+#ifdef __linux__
   audio_fd = open("/dev/dsp", O_WRONLY);
   if (audio_fd<0)
     fprintf(stderr, "Could not open /dev/dsp\n");
-  
-                     
-  i = 11 | (2<<16);                                           
+
+
+  i = 11 | (2<<16);
   myioctl(audio_fd, SNDCTL_DSP_SETFRAGMENT, &i);
   myioctl(audio_fd, SNDCTL_DSP_RESET, 0);
-  
+
   i=SAMPLERATE;
-  
+
   myioctl(audio_fd, SNDCTL_DSP_SPEED, &i);
-  
+
   i=1;
   myioctl(audio_fd, SNDCTL_DSP_STEREO, &i);
-  
+
   myioctl(audio_fd, SNDCTL_DSP_GETFMTS, &i);
-  
-  if (i&=AFMT_S16_LE)    
+
+  if (i&=AFMT_S16_LE)
     myioctl(audio_fd, SNDCTL_DSP_SETFMT, &i);
   else
     fprintf(stderr, "Could not play signed 16 data\n");
+#else
+  {
+    SDL_AudioSpec want, have;
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
+      I_Error("Could not init SDL audio: %s", SDL_GetError());
+
+    SDL_zero(want);
+    want.freq = SAMPLERATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = SAMPLECOUNT;
+
+    audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (!audio_dev)
+      I_Error("Could not open SDL audio device: %s", SDL_GetError());
+
+    SDL_PauseAudioDevice(audio_dev, 0);
+  }
+#endif
 
   fprintf(stderr, " configured audio device\n" );
 
@@ -926,7 +966,9 @@ void I_HandleSoundTimer( int ignore )
   {
     // See I_SubmitSound().
     // Write it to DSP device.
+#ifdef __linux__
     write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
+#endif
 
     // Reset flag counter.
     flag = 0;
